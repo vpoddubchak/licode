@@ -10,7 +10,7 @@ const SemanticSdp = require('./../../common/semanticSdp/SemanticSdp');
 const PerformanceStats = require('../../common/PerformanceStats');
 const Helpers = require('./Helpers');
 
-const sdpTransform = require('sdp-transform');
+const sdpTransform = require('./../../common/SdpTransform/transform');
 
 const log = logger.getLogger('WebRtcConnection');
 
@@ -289,18 +289,16 @@ class WebRtcConnection extends EventEmitter {
 
   async addIceCandidate(sdpCandidate) {
     const candidatesInfo = sdpTransform.parse(sdpCandidate.candidate);
-    if (candidatesInfo.sdpMid === 'end' || candidatesInfo.candidates === undefined) {
+    if (sdpCandidate.sdpMid === 'end' || candidatesInfo.candidates === undefined) {
       return;
     }
     const results = [];
     // eslint-disable-next-line no-restricted-syntax
     for (const candidate of candidatesInfo.candidates) {
-      if (candidate.transport.toLowerCase() === 'udp') {
-        results.push(this.wrtc.addRemoteCandidate(sdpCandidate.sdpMid, sdpCandidate.sdpMLineIndex,
-          candidate.foundation, candidate.component, candidate.priority, candidate.transport,
-          candidate.ip, candidate.port, candidate.type, candidate.raddr, candidate.rport,
-          sdpCandidate.candidate));
-      }
+      results.push(this.wrtc.addRemoteCandidate(sdpCandidate.sdpMid, sdpCandidate.sdpMLineIndex,
+        candidate.foundation, candidate.component, candidate.priority, candidate.transport,
+        candidate.ip, candidate.port, candidate.type, candidate.tcpType, candidate.raddr, candidate.rport, candidate.ufrag,
+        sdpCandidate.candidate));
     }
     await Promise.all(results);
   }

@@ -1,4 +1,4 @@
-const SDPTransform = require('sdp-transform');  // eslint-disable-line
+const SDPTransform = require('../SdpTransform/transform');
 const CandidateInfo = require('./CandidateInfo');
 const CodecInfo = require('./CodecInfo');
 const DTLSInfo = require('./DTLSInfo');
@@ -276,18 +276,36 @@ class SDPInfo {
 
       const candidates = media.getCandidates();
       candidates.forEach((candidate) => {
-        md.candidates.push({
-          foundation: candidate.getFoundation(),
-          component: candidate.getComponentId(),
-          transport: candidate.getTransport(),
-          priority: candidate.getPriority(),
-          ip: candidate.getAddress(),
-          port: candidate.getPort(),
-          type: candidate.getType(),
-          relAddr: candidate.getRelAddr(),
-          relPort: candidate.getRelPort(),
-          generation: candidate.getGeneration(),
-        });
+        if (candidate.getTransport() === 'tcp') {
+          if (candidate.getTcpType() === 'passive') {
+            md.candidates.push({
+              foundation: candidate.getFoundation(),
+              component: candidate.getComponentId(),
+              transport: candidate.getTransport(),
+              priority: candidate.getPriority(),
+              ip: candidate.getAddress(),
+              port: candidate.getPort(),
+              type: candidate.getType(),
+              tcptype: candidate.getTcpType(), // tcpType need only for TCP candidates
+              relAddr: candidate.getRelAddr(),
+              relPort: candidate.getRelPort(),
+              generation: candidate.getGeneration(),
+            });
+          }
+        } else {
+          md.candidates.push({
+            foundation: candidate.getFoundation(),
+            component: candidate.getComponentId(),
+            transport: candidate.getTransport(),
+            priority: candidate.getPriority(),
+            ip: candidate.getAddress(),
+            port: candidate.getPort(),
+            type: candidate.getType(),
+            relAddr: candidate.getRelAddr(),
+            relPort: candidate.getRelPort(),
+            generation: candidate.getGeneration(),
+          });
+        }
       });
 
       ice = media.getICE();
@@ -860,7 +878,7 @@ SDPInfo.process = (sdp) => {
       candidates.forEach((candidate) => {
         mediaInfo.addCandidate(new CandidateInfo(candidate.foundation, candidate.component,
           candidate.transport, candidate.priority, candidate.ip, candidate.port, candidate.type,
-          candidate.generation, candidate.relAddr, candidate.relPort));
+          candidate.tcptype, candidate.generation, candidate.relAddr, candidate.relPort));
       });
     }
 

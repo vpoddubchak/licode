@@ -883,8 +883,8 @@ boost::future<void> WebRtcConnection::addRemoteCandidate(std::string mid, int mL
 bool WebRtcConnection::addRemoteCandidateSync(std::string mid, int mLineIndex, CandidateInfo candidate) {
   std::vector<CandidateInfo> candidate_list;
   // TODO(pedro) Check type of transport.
-  ELOG_DEBUG("%s message: Adding remote Candidate, candidate: %s, mid: %s, sdpMLine: %d",
-              toLog(), candidate.to_string(), mid.c_str(), mLineIndex);
+  ELOG_DEBUG("%s message: Adding remote Candidate, candidate: %s, mid: %s, sdpMLine: %d, username: %s",
+              toLog(), candidate.to_string(), mid.c_str(), mLineIndex, candidate.username);
   if (video_transport_ == nullptr && audio_transport_ == nullptr) {
     ELOG_WARN("%s message: addRemoteCandidate on NULL transport", toLog());
     return false;
