@@ -165,9 +165,9 @@ const Room = (altIo, altConnectionHelpers, altConnectionManager, specInput) => {
 
   const createRemoteStreamP2PConnection = (streamInput, peerSocket) => {
     const stream = streamInput;
-    const connection = that.erizoConnectionManager.getOrBuildErizoConnection(
-      getP2PConnectionOptions(stream, peerSocket));
-    stream.addPC(connection);
+    const connectionOptions = getP2PConnectionOptions(stream, peerSocket);
+    const connection = that.erizoConnectionManager.getOrBuildErizoConnection(connectionOptions);
+    stream.addPC(connection, false, connectionOptions);
     connection.on('connection-failed', that.dispatchEvent.bind(this));
     stream.on('added', dispatchStreamSubscribed.bind(null, stream));
     stream.on('icestatechanged', (evt) => {
@@ -220,7 +220,6 @@ const Room = (altIo, altConnectionHelpers, altConnectionManager, specInput) => {
   const getErizoConnectionOptions = (stream, connectionId, erizoId, options, isRemote) => {
     const connectionOpts = {
       callback(message, streamId = stream.getID()) {
-        log.debug(`message: Sending message, data: ${JSON.stringify(message)}, ${stream.toLog()}, ${toLog()}`);
         if (message && message.type && message.type === 'updatestream') {
           socket.sendSDP('streamMessage', {
             streamId,
@@ -241,6 +240,7 @@ const Room = (altIo, altConnectionHelpers, altConnectionManager, specInput) => {
       video: options.video && stream.hasVideo(),
       maxAudioBW: options.maxAudioBW,
       maxVideoBW: options.maxVideoBW,
+      simulcast: options.simulcast,
       limitMaxAudioBW: spec.maxAudioBW,
       limitMaxVideoBW: spec.maxVideoBW,
       label: stream.getLabel(),
@@ -249,9 +249,9 @@ const Room = (altIo, altConnectionHelpers, altConnectionManager, specInput) => {
       forceTurn: stream.forceTurn,
       p2p: false,
       streamRemovedListener: onRemoteStreamRemovedListener,
+      isRemote,
     };
     if (!isRemote) {
-      connectionOpts.simulcast = options.simulcast;
       connectionOpts.startVideoBW = options.startVideoBW;
       connectionOpts.hardMinVideoBW = options.hardMinVideoBW;
     }
@@ -263,7 +263,7 @@ const Room = (altIo, altConnectionHelpers, altConnectionManager, specInput) => {
     const connectionOpts = getErizoConnectionOptions(stream, connectionId, erizoId, options, true);
     const connection = that.erizoConnectionManager
       .getOrBuildErizoConnection(connectionOpts, erizoId, spec.singlePC);
-    stream.addPC(connection);
+    stream.addPC(connection, false, connectionOpts);
     connection.on('connection-failed', that.dispatchEvent.bind(this));
 
     stream.on('added', dispatchStreamSubscribed.bind(null, stream));
@@ -284,7 +284,7 @@ const Room = (altIo, altConnectionHelpers, altConnectionManager, specInput) => {
     const connectionOpts = getErizoConnectionOptions(stream, connectionId, erizoId, options);
     const connection = that.erizoConnectionManager
       .getOrBuildErizoConnection(connectionOpts, erizoId, spec.singlePC);
-    stream.addPC(connection);
+    stream.addPC(connection, false, options);
     connection.on('connection-failed', that.dispatchEvent.bind(this));
     stream.on('icestatechanged', (evt) => {
       log.debug(`message: icestatechanged, ${stream.toLog()}, iceConnectionState: ${evt.msg.state}, ${toLog()}`);
@@ -297,38 +297,6 @@ const Room = (altIo, altConnectionHelpers, altConnectionManager, specInput) => {
       }
     });
     stream.pc.addStream(stream);
-  };
-
-  const onAutomaticStreamsSubscription = (args) => {
-    const streamIds = args.streamIds;
-    const erizoId = args.erizoId;
-    const connectionId = args.connectionId;
-    const options = args.options;
-    let stream;
-    switch (args.type) {
-      case 'multiple-initializing':
-        streamIds.forEach((id) => {
-          stream = remoteStreams.get(id);
-          // Prepare each stream to listen to PC events.
-          createRemoteStreamErizoConnection(stream, connectionId, erizoId, options);
-        });
-        break;
-      default:
-        break;
-    }
-  };
-
-  const onAutomaticStreamsUnsubscription = (args) => {
-    const streamIds = args.streamIds;
-    let stream;
-    streamIds.forEach((id) => {
-      stream = remoteStreams.get(id);
-    });
-    streamIds.forEach((id) => {
-      stream = remoteStreams.get(id);
-      removeStream(stream);
-      delete stream.failed;
-    });
   };
 
   // We receive an event with a new stream in the room.
@@ -354,13 +322,7 @@ const Room = (altIo, altConnectionHelpers, altConnectionManager, specInput) => {
   };
 
   const socketOnStreamMessageFromErizo = (arg) => {
-    if (arg.context === 'auto-streams-subscription') {
-      onAutomaticStreamsSubscription(arg.mess);
-    } else if (arg.context === 'auto-streams-unsubscription') {
-      onAutomaticStreamsUnsubscription(arg.mess);
-    } else {
-      log.debug(`message: Failed applying a stream message from erizo, ${toLog()}, msg: ${JSON.stringify(arg)}`);
-    }
+    log.debug(`message: Failed applying a stream message from erizo, ${toLog()}, msg: ${JSON.stringify(arg)}`);
   };
 
   const socketOnConnectionQualityLevel = (arg) => {
@@ -572,6 +534,9 @@ const Room = (altIo, altConnectionHelpers, altConnectionManager, specInput) => {
     metadata: options.metadata,
     createOffer: options.createOffer,
     muteStream: options.muteStream,
+    encryptTransport:
+      (options.encryptTransport === undefined) ? true : options.encryptTransport,
+    handlerProfile: options.handlerProfile,
   });
 
   const populateStreamFunctions = (id, streamInput, error, callback = () => {}) => {
@@ -669,7 +634,9 @@ const Room = (altIo, altConnectionHelpers, altConnectionManager, specInput) => {
     options.audio = (options.audio === undefined) ? true : options.audio;
     options.video = (options.video === undefined) ? true : options.video;
     options.data = (options.data === undefined) ? true : options.data;
-    options.offerFromErizo = (options.offerFromErizo === undefined) ? true : options.offerFromErizo;
+    options.encryptTransport =
+      (options.encryptTransport === undefined) ? true : options.encryptTransport;
+
     stream.checkOptions(options);
     const constraint = { streamId: stream.getID(),
       audio: options.audio && stream.hasAudio(),
@@ -678,10 +645,12 @@ const Room = (altIo, altConnectionHelpers, altConnectionManager, specInput) => {
       data: options.data && stream.hasData(),
       browser: that.ConnectionHelpers.getBrowser(),
       createOffer: options.createOffer,
-      offerFromErizo: options.offerFromErizo,
       metadata: options.metadata,
       muteStream: options.muteStream,
-      slideShowMode: options.slideShowMode };
+      encryptTransport: options.encryptTransport,
+      slideShowMode: options.slideShowMode,
+      handlerProfile: options.handlerProfile,
+    };
     socket.sendSDP('subscribe', constraint, undefined, (result, erizoId, connectionId, error) => {
       if (result === null) {
         log.error(`message: Error subscribing to stream, ${stream.toLog()}, ${toLog()}, error: ${error}`);
@@ -692,9 +661,6 @@ const Room = (altIo, altConnectionHelpers, altConnectionManager, specInput) => {
 
       log.debug(`message: Subscriber added, ${stream.toLog()}, ${toLog()}, erizoId: ${erizoId}, connectionId: ${connectionId}`);
       createRemoteStreamErizoConnection(stream, connectionId, erizoId, options);
-      if (!options.offerFromErizo) {
-        stream.pc.sendOffer();
-      }
       callback(true);
     });
   };
@@ -785,6 +751,7 @@ const Room = (altIo, altConnectionHelpers, altConnectionManager, specInput) => {
       spec.singlePC = response.singlePC;
       spec.defaultVideoBW = response.defaultVideoBW;
       spec.maxVideoBW = response.maxVideoBW;
+      that.streamPriorityStrategy = response.streamPriorityStrategy;
 
       // 2- Retrieve list of streams
       const streamIndices = Object.keys(streams);
@@ -837,6 +804,8 @@ const Room = (altIo, altConnectionHelpers, altConnectionManager, specInput) => {
     log.info(`message: Publishing stream, ${stream.toLog()}, ${toLog()}`);
 
     options.maxVideoBW = options.maxVideoBW || spec.defaultVideoBW;
+    options.limitMaxVideoBW = spec.maxVideoBW;
+    options.limitMaxAudioBW = spec.maxAudioBW;
     if (options.maxVideoBW > spec.maxVideoBW) {
       options.maxVideoBW = spec.maxVideoBW;
     }
@@ -852,6 +821,8 @@ const Room = (altIo, altConnectionHelpers, altConnectionManager, specInput) => {
     stream.forceTurn = options.forceTurn;
 
     options.simulcast = options.simulcast || false;
+
+    options.handlerProfile = options.handlerProfile || null;
 
     options.muteStream = {
       audio: stream.audioMuted,
@@ -913,7 +884,7 @@ const Room = (altIo, altConnectionHelpers, altConnectionManager, specInput) => {
 
   // It unpublishes the local stream in the room, dispatching a StreamEvent("stream-removed")
   that.unpublish = (streamInput, callback = () => {}) => {
-    const stream = streamInput;
+    const stream = that.localStreams.get(streamInput.getID());
     // Unpublish stream from Erizo-Controller
     if (stream && stream.local) {
       // Media stream
@@ -958,11 +929,11 @@ const Room = (altIo, altConnectionHelpers, altConnectionManager, specInput) => {
 
   // It subscribe to a remote stream and draws it inside the HTML tag given by the ID='elementID'
   that.subscribe = (streamInput, optionsInput = {}, callback = () => {}) => {
-    const stream = streamInput;
+    const stream = that.remoteStreams.get(streamInput.getID());
     const options = optionsInput;
 
     if (stream && !stream.local && !stream.failed) {
-      if (stream.state !== 'unsubscribed') {
+      if (stream.state !== 'unsubscribed' && stream.state !== 'unsubscribing') {
         log.warning(`message: Cannot subscribe to a subscribed stream, ${stream.toLog()}, ${toLog()}`);
         callback(undefined, 'Stream already subscribed');
         return;
@@ -1023,17 +994,17 @@ const Room = (altIo, altConnectionHelpers, altConnectionManager, specInput) => {
 
   // It unsubscribes from the stream, removing the HTML element.
   that.unsubscribe = (streamInput, callback = () => {}) => {
-    const stream = streamInput;
+    const stream = that.remoteStreams.get(streamInput.getID());
     // Unsubscribe from stream
     if (socket !== undefined) {
       if (stream && !stream.local) {
-        if (stream.state !== 'subscribed') {
+        if (stream.state !== 'subscribed' && stream.state !== 'subscribing') {
           log.warning(`message: Cannot unsubscribe to a stream that is not subscribed, ${stream.toLog()}, ${toLog()}`);
           callback(undefined, 'Stream not subscribed');
           return;
         }
         stream.state = 'unsubscribing';
-        log.info(`message: Subscribing to stream, ${stream.toLog()}, ${toLog()}`);
+        log.info(`message: Unsubscribing stream, ${stream.toLog()}, ${toLog()}`);
         socket.sendMessage('unsubscribe', stream.getID(), (result, error) => {
           if (result === null) {
             stream.state = 'subscribed';
@@ -1053,30 +1024,6 @@ const Room = (altIo, altConnectionHelpers, altConnectionManager, specInput) => {
           'Error unsubscribing, stream does not exist or is not local');
       }
     }
-  };
-
-  // const selectors = {
-  //   '/id': '23',
-  //   '/attributes/group': '23',
-  //   '/attributes/kind': 'professor',
-  //   '/attributes/externalId': '10'
-  // };
-  // const negativeSelectors = {
-  //   '/id': '23',
-  //   '/attributes/group': '23',
-  //   '/attributes/kind': 'professor',
-  //   '/attributes/externalId': '10'
-  // };
-  // const options = {audio: true, video: false, forceTurn: true};
-  that.autoSubscribe = (selectors, negativeSelectors, options, callback) => {
-    if (!socket) {
-      return;
-    }
-    socket.sendMessage('autoSubscribe', { selectors, negativeSelectors, options }, (result) => {
-      if (result) {
-        callback(result);
-      }
-    });
   };
 
   that.getStreamStats = (stream, callback = () => {}) => {
@@ -1107,6 +1054,15 @@ const Room = (altIo, altConnectionHelpers, altConnectionManager, specInput) => {
 
     return streams;
   };
+
+  that.setStreamPriorityStrategy = (strategyId, callback = () => { }) => {
+    socket.sendMessage('setStreamPriorityStrategy', strategyId, (result) => {
+      if (result) {
+        callback(result);
+      }
+    });
+  };
+
 
   that.on('room-disconnected', clearAll);
 

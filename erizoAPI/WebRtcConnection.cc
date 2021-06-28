@@ -80,6 +80,35 @@ void WebRtcConnection::computePromiseTimes(erizo::time_point promise_start,
   promise_delays_.add(promise_notified - promise_resolved);
 }
 
+erizo::BwDistributionConfig WebRtcConnection::parseDistribConfig(std::string distribution_config_string) {
+    erizo::BwDistributionConfig distrib_config;
+    json distribution_config_json = json::parse(distribution_config_string);
+    if (distribution_config_json.find("type") != distribution_config_json.end()) {
+      std::string type = distribution_config_json["type"];
+      if (type == "MaxVideoBW") {
+        distrib_config.selected_distributor = erizo::MAX_VIDEO_BW;
+      } else  if (type == "TargetVideoBW") {
+        distrib_config.selected_distributor = erizo::TARGET_VIDEO_BW;
+      } else if (type == "StreamPriority") {
+        distrib_config.selected_distributor = erizo::STREAM_PRIORITY;
+      }
+    }
+    std::string strategy_id = "none";
+    if (distribution_config_json.find("strategyId") != distribution_config_json.end()) {
+      strategy_id = distribution_config_json["strategyId"];
+    }
+    if (distribution_config_json.find("strategy") != distribution_config_json.end()) {
+      json strategy_json = distribution_config_json["strategy"];
+      erizo::StreamPriorityStrategy strategy(strategy_id);
+      for (auto strategy_entry : strategy_json) {
+        strategy.addStep(
+            erizo::StreamPriorityStep(strategy_entry[0].get<std::string>(), strategy_entry[1].get<std::string>()));
+      }
+      distrib_config.priority_strategy = strategy;
+    }
+    return distrib_config;
+}
+
 void WebRtcConnection::closeEvents() {
   if (!uv_is_closing(reinterpret_cast<uv_handle_t*>(async_))) {
     ELOG_DEBUG("%s, message: Closing handle", toLog());
@@ -140,6 +169,7 @@ NAN_MODULE_INIT(WebRtcConnection::Init) {
   Nan::SetPrototypeMethod(tpl, "addMediaStream", addMediaStream);
   Nan::SetPrototypeMethod(tpl, "removeMediaStream", removeMediaStream);
   Nan::SetPrototypeMethod(tpl, "copySdpToLocalDescription", copySdpToLocalDescription);
+  Nan::SetPrototypeMethod(tpl, "setBwDistributionConfig", setBwDistributionConfig);
   Nan::SetPrototypeMethod(tpl, "getStats", getStats);
   Nan::SetPrototypeMethod(tpl, "maybeRestartIce", maybeRestartIce);
   Nan::SetPrototypeMethod(tpl, "getDurationDistribution", getDurationDistribution);
@@ -152,7 +182,7 @@ NAN_MODULE_INIT(WebRtcConnection::Init) {
 
 
 NAN_METHOD(WebRtcConnection::New) {
-  if (info.Length() < 7) {
+  if (info.Length() < 9) {
     Nan::ThrowError("Wrong number of arguments");
   }
 
@@ -169,7 +199,11 @@ NAN_METHOD(WebRtcConnection::New) {
     int maxPort = Nan::To<int>(info[6]).FromJust();
     bool trickle = Nan::To<bool>((info[7])).FromJust();
     Nan::Utf8String json_param(Nan::To<v8::String>(info[8]).ToLocalChecked());
-    bool enable_connection_quality_check = Nan::To<bool>((info[9])).FromJust();
+
+    Nan::Utf8String json_param_distribution(Nan::To<v8::String>(info[9]).ToLocalChecked());
+    bool enable_connection_quality_check = Nan::To<bool>((info[10])).FromJust();
+    bool encrypt_transport = Nan::To<bool>((info[11])).FromJust();
+
     std::string media_config_string = std::string(*json_param);
     json media_config = json::parse(media_config_string);
     std::vector<erizo::RtpMap> rtp_mappings;
@@ -237,17 +271,17 @@ NAN_METHOD(WebRtcConnection::New) {
     }
 
     erizo::IceConfig iceConfig;
-    if (info.Length() == 15) {
-      Nan::Utf8String param2(Nan::To<v8::String>(info[10]).ToLocalChecked());
+    if (info.Length() == 17) {
+      Nan::Utf8String param2(Nan::To<v8::String>(info[12]).ToLocalChecked());
       std::string turnServer = std::string(*param2);
-      int turnPort = Nan::To<int>(info[11]).FromJust();
-      Nan::Utf8String param3(Nan::To<v8::String>(info[12]).ToLocalChecked());
+      int turnPort = Nan::To<int>(info[13]).FromJust();
+      Nan::Utf8String param3(Nan::To<v8::String>(info[14]).ToLocalChecked());
       std::string turnUsername = std::string(*param3);
-      Nan::Utf8String param4(Nan::To<v8::String>(info[13]).ToLocalChecked());
+      Nan::Utf8String param4(Nan::To<v8::String>(info[15]).ToLocalChecked());
       std::string turnPass = std::string(*param4);
-      Nan::Utf8String param5(Nan::To<v8::String>(info[14]).ToLocalChecked());
-      std::string network_interface = std::string(*param5);
+      Nan::Utf8String param5(Nan::To<v8::String>(info[16]).ToLocalChecked());
 
+      std::string network_interface = std::string(*param5);
       iceConfig.turn_server = turnServer;
       iceConfig.turn_port = turnPort;
       iceConfig.turn_username = turnUsername;
@@ -266,10 +300,13 @@ NAN_METHOD(WebRtcConnection::New) {
     std::shared_ptr<erizo::IOWorker> io_worker = io_thread_pool->me->getLessUsedIOWorker();
 
     WebRtcConnection* obj = new WebRtcConnection();
+    std::string distribution_config_string = std::string(*json_param_distribution);
+    erizo::BwDistributionConfig distrib_config = obj->parseDistribConfig(distribution_config_string);
+
     obj->id_ = wrtcId;
     obj->me = std::make_shared<erizo::WebRtcConnection>(worker, io_worker, wrtcId, iceConfig,
                                                         rtp_mappings, ext_mappings, enable_connection_quality_check,
-                                                        obj);
+                                                        distrib_config, encrypt_transport, obj);
     obj->Wrap(info.This());
     obj->Ref();
     info.GetReturnValue().Set(info.This());
@@ -322,18 +359,16 @@ NAN_METHOD(WebRtcConnection::createOffer) {
     return;
   }
 
-  if (info.Length() < 3) {
+  if (info.Length() < 1) {
     Nan::ThrowError("Wrong number of arguments");
   }
-  bool video_enabled = Nan::To<bool>(info[0]).FromJust();
-  bool audio_enabled = Nan::To<bool>(info[1]).FromJust();
-  bool bundle = Nan::To<bool>(info[2]).FromJust();
+  bool bundle = Nan::To<bool>(info[0]).FromJust();
 
   Nan::Persistent<v8::Promise::Resolver> *persistent = new Nan::Persistent<v8::Promise::Resolver>(resolver);
 
   erizo::time_point promise_start = erizo::clock::now();
 
-  me->createOffer(video_enabled, audio_enabled, bundle).then(
+  me->createOffer(bundle).then(
     [persistent, obj, promise_start] (boost::future<void>) {
       obj->notifyFuture(persistent, promise_start);
     });
@@ -381,12 +416,11 @@ NAN_METHOD(WebRtcConnection::setRemoteDescription) {
 
   ConnectionDescription* param =
     Nan::ObjectWrap::Unwrap<ConnectionDescription>(Nan::To<v8::Object>(info[0]).ToLocalChecked());
-  int received_session_version = Nan::To<int>(info[1]).FromJust();
   auto sdp = std::make_shared<erizo::SdpInfo>(*param->me.get());
 
   Nan::Persistent<v8::Promise::Resolver> *persistent = new Nan::Persistent<v8::Promise::Resolver>(resolver);
   erizo::time_point promise_start = erizo::clock::now();
-  me->setRemoteSdpInfo(sdp, received_session_version).then(
+  me->setRemoteSdpInfo(sdp).then(
     [persistent, obj, promise_start] (boost::future<void>) {
       obj->notifyFuture(persistent, promise_start);
     });
@@ -438,10 +472,25 @@ NAN_METHOD(WebRtcConnection::copySdpToLocalDescription) {
   me->copyDataToLocalSdpInfo(source_sdp);
 }
 
-NAN_METHOD(WebRtcConnection::addRemoteCandidate) {
+NAN_METHOD(WebRtcConnection::setBwDistributionConfig) {
   WebRtcConnection* obj = Nan::ObjectWrap::Unwrap<WebRtcConnection>(info.Holder());
   std::shared_ptr<erizo::WebRtcConnection> me = obj->me;
   if (!me) {
+    return;
+  }
+  Nan::Utf8String json_param_distribution(Nan::To<v8::String>(info[0]).ToLocalChecked());
+  std::string distribution_config_string = std::string(*json_param_distribution);
+  erizo::BwDistributionConfig distrib_config = obj->parseDistribConfig(distribution_config_string);
+  me->setBwDistributionConfig(distrib_config);
+}
+
+NAN_METHOD(WebRtcConnection::addRemoteCandidate) {
+  WebRtcConnection* obj = Nan::ObjectWrap::Unwrap<WebRtcConnection>(info.Holder());
+  std::shared_ptr<erizo::WebRtcConnection> me = obj->me;
+  v8::Local<v8::Promise::Resolver> resolver = v8::Promise::Resolver::New(Nan::GetCurrentContext()).ToLocalChecked();
+  if (!me) {
+    resolver->Resolve(Nan::GetCurrentContext(), Nan::New("").ToLocalChecked()).IsNothing();
+    info.GetReturnValue().Set(resolver->GetPromise());
     return;
   }
   CandidateInfo cand;
@@ -497,9 +546,21 @@ NAN_METHOD(WebRtcConnection::addRemoteCandidate) {
   cand.rPort = Nan::To<int>(info[11]).FromJust();
 
   Nan::Utf8String param6(Nan::To<v8::String>(info[12]).ToLocalChecked());
-  cand.sdp = std::string(*param6);
+  cand.username = std::string(*param6);
 
-  me->addRemoteCandidate(mid, sdpMLine, cand);
+  Nan::Utf8String param7(Nan::To<v8::String>(info[13]).ToLocalChecked());
+  cand.sdp = std::string(*param7);
+
+  Nan::Persistent<v8::Promise::Resolver> *persistent = new Nan::Persistent<v8::Promise::Resolver>(resolver);
+
+  erizo::time_point promise_start = erizo::clock::now();
+
+  me->addRemoteCandidate(mid, sdpMLine, cand).then(
+    [persistent, obj, promise_start] (boost::future<void>) {
+      obj->notifyFuture(persistent, promise_start);
+    });
+
+  info.GetReturnValue().Set(resolver->GetPromise());
 
   info.GetReturnValue().Set(Nan::New(true));
 }
@@ -547,7 +608,7 @@ NAN_METHOD(WebRtcConnection::addMediaStream) {
   erizo::time_point promise_start = erizo::clock::now();
 
   me->addMediaStream(ms).then(
-    [persistent, obj, promise_start] (boost::future<void>) {
+    [persistent, obj, promise_start] (boost::future<void> fut) {
       obj->notifyFuture(persistent, promise_start);
     });
 
@@ -709,6 +770,9 @@ NAUV_WORK_CB(WebRtcConnection::promiseResolver) {
         closed = true;
       }
       resolver->Resolve(Nan::GetCurrentContext(), Nan::New(boost::get<std::string>(r).c_str()).ToLocalChecked())
+        .IsNothing();
+    } else if (boost::get<bool>(&r) != nullptr) {
+      resolver->Resolve(Nan::GetCurrentContext(), Nan::New(boost::get<bool>(r)))
         .IsNothing();
     } else if (boost::get<std::shared_ptr<erizo::SdpInfo>>(&r) != nullptr) {
       std::shared_ptr<erizo::SdpInfo> sdp_info = boost::get<std::shared_ptr<erizo::SdpInfo>>(r);

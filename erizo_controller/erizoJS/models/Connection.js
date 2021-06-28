@@ -8,7 +8,7 @@ const logger = require('./../../common/logger').logger;
 const SessionDescription = require('./SessionDescription');
 const SemanticSdp = require('./../../common/semanticSdp/SemanticSdp');
 const PerformanceStats = require('./../../common/PerformanceStats');
-const sdpTransform = require('sdp-transform');
+const sdpTransform = require('../SdpTransform/transform');
 
 const log = logger.getLogger('Connection');
 
@@ -370,6 +370,7 @@ class Connection extends events.EventEmitter {
       return;
     }
     candidatesInfo.candidates.forEach((candidate) => {
+      log.warn("Adding remote Candidate", candidate);
       this.wrtc.addRemoteCandidate(sdpCandidate.sdpMid, sdpCandidate.sdpMLineIndex,
         candidate.foundation, candidate.component, candidate.priority, candidate.transport,
         candidate.ip, candidate.port, candidate.type, candidate.tcpType,

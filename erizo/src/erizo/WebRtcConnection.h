@@ -16,6 +16,7 @@
 #include "./Stats.h"
 #include "bandwidth/BandwidthDistributionAlgorithm.h"
 #include "bandwidth/ConnectionQualityCheck.h"
+#include "bandwidth/BwDistributionConfig.h"
 #include "pipeline/Pipeline.h"
 #include "thread/Worker.h"
 #include "thread/IOWorker.h"
@@ -37,6 +38,7 @@ class Transport;
 class TransportListener;
 class IceConfig;
 class MediaStream;
+class Transceiver;
 
 /**
  * WebRTC Events
@@ -61,6 +63,7 @@ class WebRtcConnectionEventListener {
 class WebRtcConnection: public TransportListener, public LogContext, public HandlerManagerListener,
                         public std::enable_shared_from_this<WebRtcConnection>, public Service {
   DECLARE_LOGGER();
+  static log4cxx::LoggerPtr ConnectionStatsLogger;
 
  public:
   typedef typename Handler::Context Context;
@@ -72,7 +75,8 @@ class WebRtcConnection: public TransportListener, public LogContext, public Hand
   WebRtcConnection(std::shared_ptr<Worker> worker, std::shared_ptr<IOWorker> io_worker,
       const std::string& connection_id, const IceConfig& ice_config,
       const std::vector<RtpMap> rtp_mappings, const std::vector<erizo::ExtMap> ext_mappings,
-      bool enable_connection_quality_check, WebRtcConnectionEventListener* listener);
+      bool enable_connection_quality_check, const BwDistributionConfig& distribution_config,
+      bool encrypt_transport, WebRtcConnectionEventListener* listener);
   /**
    * Destructor.
    */
@@ -85,9 +89,9 @@ class WebRtcConnection: public TransportListener, public LogContext, public Hand
   boost::future<void> close();
   void syncClose();
 
-  boost::future<void> setRemoteSdpInfo(std::shared_ptr<SdpInfo> sdp, int received_session_version);
+  boost::future<void> setRemoteSdpInfo(std::shared_ptr<SdpInfo> sdp);
 
-  boost::future<void> createOffer(bool video_enabled, bool audio_enabled, bool bundle);
+  boost::future<void> createOffer(bool bundle);
 
   boost::future<void> addRemoteCandidate(std::string mid, int mLineIndex, CandidateInfo candidate);
 
@@ -140,6 +144,7 @@ class WebRtcConnection: public TransportListener, public LogContext, public Hand
   boost::future<void> addMediaStream(std::shared_ptr<MediaStream> media_stream);
   boost::future<void> removeMediaStream(const std::string& stream_id);
   void forEachMediaStream(std::function<void(const std::shared_ptr<MediaStream>&)> func);
+  void forEachTransceiver(std::function<void(const std::shared_ptr<Transceiver>&)> func);
   boost::future<void> forEachMediaStreamAsync(std::function<void(const std::shared_ptr<MediaStream>&)> func);
   void forEachMediaStreamAsyncNoPromise(std::function<void(const std::shared_ptr<MediaStream>&)> func);
 
@@ -151,8 +156,15 @@ class WebRtcConnection: public TransportListener, public LogContext, public Hand
 
   std::shared_ptr<Worker> getWorker() { return worker_; }
 
+  void setBwDistributionConfig(BwDistributionConfig distribution_config);
+
+  void setBwDistributionConfigSync(BwDistributionConfig distribution_config);
+
   inline std::string toLog() {
-    return "id: " + connection_id_ + ", " + printLogContext();
+    return "id: " + connection_id_ + ", distributor: "
+      + std::to_string(bw_distribution_config_.selected_distributor)
+      + ", strategyId: " + bw_distribution_config_.priority_strategy.getStrategyId()
+      + ", " + printLogContext();
   }
 
   bool isPipelineInitialized() { return pipeline_initialized_; }
@@ -166,23 +178,32 @@ class WebRtcConnection: public TransportListener, public LogContext, public Hand
   void getJSONStats(std::function<void(std::string)> callback);
 
  private:
-  bool createOfferSync(bool video_enabled, bool audio_enabled, bool bundle);
-  boost::future<void> processRemoteSdp(int received_session_version);
-  boost::future<void> setRemoteSdpsToMediaStreams(int received_session_version);
+  bool createOfferSync(bool bundle);
+  boost::future<void> processRemoteSdp();
+  boost::future<void> setRemoteSdpsToMediaStreams();
   std::string getJSONCandidate(const std::string& mid, const std::string& sdp);
   void trackTransportInfo();
   void onRtcpFromTransport(std::shared_ptr<DataPacket> packet, Transport *transport);
   void onREMBFromTransport(RtcpHeader *chead, Transport *transport);
   void maybeNotifyWebRtcConnectionEvent(const WebRTCEvent& event, const std::string& message);
   void initializePipeline();
+  void addMediaStreamSync(std::shared_ptr<MediaStream> media_stream);
+  void associateTransceiversToSdpSync();
+  std::shared_ptr<MediaStream> getMediaStreamFromLabel(std::string stream_label);
+  std::shared_ptr<MediaStream> getMediaStream(std::string stream_id);
+  void detectNewTransceiversInRemoteSdp();
+  void associateMediaStreamToTransceiver(std::shared_ptr<MediaStream> stream,
+    std::shared_ptr<Transceiver> transceiver);
+  void associateMediaStreamToSender(std::shared_ptr<MediaStream> media_stream);
+  void initializeStats();
+  void printStats();
+  void transferMediaStats(std::string target_node, std::string source_parent, std::string source_node);
 
  protected:
   std::atomic<WebRTCEvent> global_state_;
 
  private:
   std::string connection_id_;
-  bool audio_enabled_;
-  bool video_enabled_;
   bool trickle_enabled_;
   bool slide_show_mode_;
   bool sending_;
@@ -196,13 +217,15 @@ class WebRtcConnection: public TransportListener, public LogContext, public Hand
   std::shared_ptr<Transport> video_transport_, audio_transport_;
 
   std::shared_ptr<Stats> stats_;
+  std::shared_ptr<Stats> log_stats_;
 
   boost::mutex update_state_mutex_;
   boost::mutex event_listener_mutex_;
 
   std::shared_ptr<Worker> worker_;
   std::shared_ptr<IOWorker> io_worker_;
-  std::vector<std::shared_ptr<MediaStream>> media_streams_;
+  std::vector<std::shared_ptr<Transceiver>> transceivers_;
+  std::vector<std::shared_ptr<MediaStream>> streams_;
   std::shared_ptr<SdpInfo> remote_sdp_;
   std::shared_ptr<SdpInfo> local_sdp_;
   bool audio_muted_;
@@ -210,11 +233,14 @@ class WebRtcConnection: public TransportListener, public LogContext, public Hand
   bool first_remote_sdp_processed_;
 
   std::unique_ptr<BandwidthDistributionAlgorithm> distributor_;
+  BwDistributionConfig bw_distribution_config_;
   ConnectionQualityCheck connection_quality_check_;
   bool enable_connection_quality_check_;
+  bool encrypt_transport_;
   Pipeline::Ptr pipeline_;
   bool pipeline_initialized_;
   std::shared_ptr<HandlerManager> handler_manager_;
+  uint32_t latest_mid_;
 };
 
 class ConnectionPacketReader : public InboundHandler {

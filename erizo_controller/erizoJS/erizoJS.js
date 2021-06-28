@@ -3,11 +3,13 @@
 // eslint-disable-next-line import/no-extraneous-dependencies
 const Getopt = require('node-getopt');
 
-let addon;
+let erizo;
 // eslint-disable-next-line import/no-unresolved
 const config = require('./../../licode_config');
 // eslint-disable-next-line import/no-unresolved
 const mediaConfig = require('./../../rtp_media_config');
+const bwDistributorConfig = require('./../../bw_distributor_config');
+
 
 global.config = config || {};
 global.config.erizo = global.config.erizo || {};
@@ -27,7 +29,9 @@ global.config.erizo.networkinterface = global.config.erizo.networkinterface || '
 global.config.erizo.activeUptimeLimit = global.config.erizo.activeUptimeLimit || 7;
 global.config.erizo.maxTimeSinceLastOperation = global.config.erizo.maxTimeSinceLastOperation || 3;
 global.config.erizo.checkUptimeInterval = global.config.erizo.checkUptimeInterval || 1800;
+global.config.erizo.addon = 'addon';
 global.mediaConfig = mediaConfig || {};
+global.bwDistributorConfig = bwDistributorConfig || { defaultDistributor: 'TargetVideoBW' };
 // Parse command line arguments
 const getopt = new Getopt([
   ['r', 'rabbit-host=ARG', 'RabbitMQ Host'],
@@ -74,7 +78,7 @@ Object.keys(opt.options).forEach((prop) => {
       break;
     case 'debug':
       // eslint-disable-next-line import/no-unresolved, global-require
-      addon = require('./../../erizoAPI/build/Release/addonDebug');
+      global.config.erizo.addon = 'addonDebug';
       isDebugMode = true;
       break;
     default:
@@ -83,10 +87,8 @@ Object.keys(opt.options).forEach((prop) => {
   }
 });
 
-if (!addon) {
-  // eslint-disable-next-line
-  addon = require('./../../erizoAPI/build/Release/addon');
-}
+// eslint-disable-next-line
+erizo = require(`./../../erizoAPI/build/Release/${global.config.erizo.addon}`);
 
 // Load submodules with updated config
 const logger = require('./../common/logger').logger;
@@ -103,10 +105,10 @@ process.on('unhandledRejection', (reason, promise) => {
 });
 
 
-const threadPool = new addon.ThreadPool(global.config.erizo.numWorkers);
+const threadPool = new erizo.ThreadPool(global.config.erizo.numWorkers);
 threadPool.start();
 
-const ioThreadPool = new addon.IOThreadPool(global.config.erizo.numIOWorkers);
+const ioThreadPool = new erizo.IOThreadPool(global.config.erizo.numIOWorkers);
 
 log.info('Starting ioThreadPool');
 ioThreadPool.start();

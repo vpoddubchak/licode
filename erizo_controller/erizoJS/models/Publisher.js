@@ -4,8 +4,8 @@
 
 const NodeClass = require('./Node').Node;
 const Subscriber = require('./Subscriber').Subscriber;
-// eslint-disable-next-line import/no-unresolved
-const addon = require('./../../../erizoAPI/build/Release/addon');
+// eslint-disable-next-line
+const erizo = require(`./../../../erizoAPI/build/Release/${global.config.erizo.addon}`);
 const logger = require('./../../common/logger').logger;
 const Helpers = require('./Helpers');
 
@@ -27,7 +27,8 @@ class Source extends NodeClass {
     this.externalOutputs = {};
     this.muteAudio = false;
     this.muteVideo = false;
-    this.muxer = new addon.OneToManyProcessor();
+    this.muxer = new erizo.OneToManyProcessor();
+    this.maxVideoBW = false;
   }
 
   get numSubscribers() {
@@ -99,7 +100,7 @@ class Source extends NodeClass {
     const eoId = `${url}_${this.streamId}`;
     log.info(`message: Adding ExternalOutput, id: ${eoId}, url: ${url},`,
       logger.objectToLog(this.options), logger.objectToLog(this.options.metadata));
-    const externalOutput = new addon.ExternalOutput(this.threadPool, url,
+    const externalOutput = new erizo.ExternalOutput(this.threadPool, url,
       Helpers.getMediaConfiguration(options.mediaConfiguration));
     externalOutput.id = eoId;
     externalOutput.init();
@@ -172,7 +173,7 @@ class Source extends NodeClass {
           this.muteStream(msg.config.muteStream);
         }
         if (msg.config.maxVideoBW) {
-          this.mediaStream.setMaxVideoBW(msg.config.maxVideoBW);
+          this.setMaxVideoBW(msg.config.maxVideoBW);
         }
       }
     } else if (msg.type === 'control') {
@@ -397,14 +398,14 @@ class Publisher extends Source {
     this.connection = connection;
 
     this.connection.mediaConfiguration = options.mediaConfiguration;
-    this.promise = this.connection.addMediaStream(streamId, options, true, false);
-    this.mediaStream = this.connection.getMediaStream(streamId);
+    this.promise = this.connection.addStream(streamId, options, true, false);
+    this.mediaStream = this.connection.getStream(streamId);
 
     this.minVideoBW = options.minVideoBW;
     this.scheme = options.scheme;
 
     if (options.maxVideoBW) {
-      this.mediaStream.setMaxVideoBW(options.maxVideoBW);
+      this.setMaxVideoBW(options.maxVideoBW);
     }
 
     this.mediaStream.setAudioReceiver(this.muxer);
@@ -413,6 +414,19 @@ class Publisher extends Source {
     const muteVideo = (options.muteStream && options.muteStream.video) || false;
     const muteAudio = (options.muteStream && options.muteStream.audio) || false;
     this.muteStream({ video: muteVideo, audio: muteAudio });
+  }
+
+  getMaxVideoBW() {
+    return this.maxVideoBW;
+  }
+
+  setMaxVideoBW(maxVideoBW) {
+    this.options.maxVideoBW = maxVideoBW;
+    this.maxVideoBW = maxVideoBW;
+    this.mediaStream.setMaxVideoBW(maxVideoBW);
+    this.forEachSubscriber((id, subscriber) => {
+      subscriber.updatePublisherMaxVideoBW();
+    });
   }
 
   getDurationDistribution() {
@@ -437,7 +451,7 @@ class Publisher extends Source {
   }
 
   close() {
-    const removeMediaStreamPromise = this.connection.removeMediaStream(this.mediaStream.id, false);
+    const removeMediaStreamPromise = this.connection.removeStream(this.mediaStream.id, false);
     if (this.mediaStream.monitorInterval) {
       clearInterval(this.mediaStream.monitorInterval);
     }
@@ -458,7 +472,7 @@ class ExternalInput extends Source {
 
     log.warn(`message: Adding ExternalInput, id: ${eiId}, url: ${url}`);
 
-    const ei = new addon.ExternalInput(url);
+    const ei = new erizo.ExternalInput(url);
 
     this.ei = ei;
     ei.id = streamId;

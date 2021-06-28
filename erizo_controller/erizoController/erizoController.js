@@ -8,6 +8,9 @@ const config = require('./../../licode_config');
 // eslint-disable-next-line import/no-extraneous-dependencies
 const Getopt = require('node-getopt');
 
+// eslint-disable-next-line import/no-unresolved
+const bwDistributorConfig = require('./../../bw_distributor_config');
+
 // Configuration default values
 global.config = config || {};
 global.config.erizoController = global.config.erizoController || {};
@@ -42,6 +45,8 @@ global.config.erizoController.allowSinglePC =
   global.config.erizoController.allowSinglePC || '';
 global.config.erizoController.maxErizosUsedByRoom =
   global.config.erizoController.maxErizosUsedByRoom || 100;
+
+global.bwDistributorConfig = bwDistributorConfig || { defaultDistributor: 'TargetVideoBW' };
 
 global.config.erizoController.roles = global.config.erizoController.roles ||
   { presenter: { publish: true, subscribe: true, record: true },
@@ -157,6 +162,10 @@ const io = require('socket.io').listen(server, {
   log: SOCKET_IO_ENABLE_LOGS,
   pingInterval: SOCKET_IO_PING_INTERVAL,
   pingTimeout: SOCKET_IO_PING_TIMEOUT,
+  allowRequest: (req, callback) => {
+    req.headers.origin = undefined;
+    callback(null, true);
+  },
 });
 
 io.set('transports', ['websocket']);
@@ -323,7 +332,7 @@ const listen = () => {
         options.singlePC = getSinglePCConfig(options.singlePC);
         const client = room.createClient(channel, token, options);
         log.info(`message: client connected, clientId: ${client.id}, roomId: ${room.id}, ` +
-            `socketId: ${socket.id}, singlePC: ${options.singlePC},`,
+            `socketId: ${socket.id}, singlePC: ${options.singlePC}`,
         logger.objectToLog(options), logger.objectToLog(options.metadata));
         if (!room.p2p && global.config.erizoController.report.session_events) {
           const timeStamp = new Date();
@@ -343,6 +352,7 @@ const listen = () => {
           id: room.id,
           clientId: client.id,
           singlePC: options.singlePC,
+          streamPriorityStrategy: options.streamPriorityStrategy,
           p2p: room.p2p,
           defaultVideoBW: global.config.erizoController.defaultVideoBW,
           maxVideoBW: global.config.erizoController.maxVideoBW,
@@ -442,7 +452,7 @@ exports.deleteRoom = (roomId, callback) => {
 exports.getContext = () => rooms;
 
 exports.connectionStatusEvent = (clientId, connectionId, info, evt) => {
-  log.info('connectionStatusEvent', clientId, connectionId, info, JSON.stringify(evt));
+  log.debug('connectionStatusEvent', clientId, connectionId, info, JSON.stringify(evt));
   const room = rooms.getRoomWithClientId(clientId);
   if (room) {
     room.sendConnectionMessageToClient(clientId, connectionId, info, evt);
